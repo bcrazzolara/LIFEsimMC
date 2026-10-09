@@ -32,6 +32,14 @@ class ZCAWhiteningModule(BaseTransformationModule):
         Name of the output transformation resource.
     diagonal_only : bool
         If True, only the diagonal of the covariance matrix is used for whitening. Default is False.
+    subtract_mean : bool
+        If True, each channel's own time mean is subtracted before whitening. Default is False, which is correct
+        for a genuine kernel-nulling combiner (e.g. DoubleBracewell): observed over an integer number of full
+        modulation periods, the true mean response is zero by construction for any fixed source (background or
+        planet), so subtracting the empirical mean there would only add estimation noise and cost degrees of
+        freedom for no benefit. For a beam combiner without a true kernel (e.g. SingleBracewell), set this to True:
+        the true mean response is generally nonzero for both background and planet, so subtracting the empirical
+        mean removes real background offset.
     """
 
     def __init__(
@@ -42,7 +50,8 @@ class ZCAWhiteningModule(BaseTransformationModule):
             n_transformation_out: str,
             n_template_in: str = None,
             n_template_out: str = None,
-            diagonal_only: bool = False
+            diagonal_only: bool = False,
+            subtract_mean: bool = False
     ):
         """Constructor method.
 
@@ -62,6 +71,9 @@ class ZCAWhiteningModule(BaseTransformationModule):
             Name of the output transformation resource.
         diagonal_only : bool
             If True, only the diagonal of the covariance matrix is used for whitening. Default is False.
+        subtract_mean : bool
+            If True, each channel's own time mean is subtracted before whitening. Default is False; set to True
+            only for a beam combiner without a true kernel (e.g. SingleBracewell). See the class docstring.
         """
         super().__init__()
         self.n_setup_in = n_setup_in
@@ -71,6 +83,7 @@ class ZCAWhiteningModule(BaseTransformationModule):
         self.n_template_out = n_template_out
         self.n_transformation_out = n_transformation_out
         self.diagonal_only = diagonal_only
+        self.subtract_mean = subtract_mean
 
     def run(self, pipeline_resources: list[BaseResource]) -> tuple[
                                                                  DataResource, TemplateResource, TransformationResource] | \
@@ -134,11 +147,15 @@ class ZCAWhiteningModule(BaseTransformationModule):
         if self.diagonal_only:
             w = torch.diag(torch.diag(w))
 
+        dof_lost = nk * nl if self.subtract_mean else 0
+
         # Apply the whitening matrix to the data
         data_in = self.get_resource_from_name(self.n_data_in).get_data()
         r_data_out = DataResource(self.n_data_out)
 
         data_in = data_in.reshape(nk * nl, nt)
+        if self.subtract_mean:
+            data_in = data_in - torch.mean(data_in, dim=1, keepdim=True)
         data_in_white = w @ data_in
         data_in_white = data_in_white.reshape(nk, nl, nt)
 
@@ -152,6 +169,8 @@ class ZCAWhiteningModule(BaseTransformationModule):
             nk, nl, nt, ng, _ = template_data_in.shape
 
             template_data_in_flat = template_data_in.reshape(nk * nl, nt, ng, ng)
+            if self.subtract_mean:
+                template_data_in_flat = template_data_in_flat - torch.mean(template_data_in_flat, dim=1, keepdim=True)
 
             template_data_in_white = torch.einsum(
                 "ab,btij->atij",
@@ -171,14 +190,21 @@ class ZCAWhiteningModule(BaseTransformationModule):
             r_template_out = None
 
         # Save the whitening transformation
+        subtract_mean = self.subtract_mean
+
         def zca_whitening_transformation(data):
             """Apply the ZCA whitening transformation."""
             if isinstance(data, np.ndarray):
                 w1 = w.cpu().numpy()
+                mean_fn = np.mean
             else:
                 w1 = w
+                mean_fn = torch.mean
             nk, nl, nt = data.shape
-            data = w1 @ data.reshape(nk * nl, nt)
+            data = data.reshape(nk * nl, nt)
+            if subtract_mean:
+                data = data - mean_fn(data, axis=1, keepdims=True)
+            data = w1 @ data
             data = data.reshape(nk, nl, nt)
 
             return data
@@ -187,7 +213,8 @@ class ZCAWhiteningModule(BaseTransformationModule):
 
         r_transformation_out = TransformationResource(
             name=self.n_transformation_out,
-            transformation=zca
+            transformation=zca,
+            dof_lost=dof_lost
         )
 
         print('Done')

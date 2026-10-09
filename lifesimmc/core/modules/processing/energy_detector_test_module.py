@@ -5,7 +5,7 @@ from scipy.stats import ncx2, chi2
 from lifesimmc.core.modules.base_module import BaseModule
 from lifesimmc.core.resources.base_resource import BaseResource
 from lifesimmc.core.resources.test_resource import TestResource
-from lifesimmc.util.resources import get_transformations_from_resource_name
+from lifesimmc.util.resources import get_transformations_from_resource_name, get_dof_lost_from_resource_name
 
 
 class EnergyDetectorTestModule(BaseModule):
@@ -87,9 +87,13 @@ class EnergyDetectorTestModule(BaseModule):
         ndim = dataf.numel()
         dataf = dataf.cpu().numpy()
 
+        # Transformations such as ZCA whitening's mean subtraction (zca_whitening_module.py) can remove degrees of
+        # freedom from the data; dof_lost is read from the transformation resource(s) rather than assumed here.
+        dof = ndim - get_dof_lost_from_resource_name(self, self.n_transformation_in)
+
         # Get test results under H1 (planet is present)
         test_h1 = (dataf.T @ dataf)
-        xsi = ncx2.ppf(1 - self.pfa, df=ndim, nc=0)
+        xsi = ncx2.ppf(1 - self.pfa, df=dof, nc=0)
 
         # TODO: handle mutiple planets
         flux = r_planet_params_in.params[0].sed.cpu().numpy()
@@ -112,8 +116,8 @@ class EnergyDetectorTestModule(BaseModule):
         data_h0 = dataf - modelf
         test_h0 = (data_h0.T @ data_h0)
         xtx = (modelf @ modelf)
-        pdet = ncx2.sf(xsi, df=ndim, nc=xtx)
-        p = chi2.sf(test_h1, df=ndim)
+        pdet = ncx2.sf(xsi, df=dof, nc=xtx)
+        p = chi2.sf(test_h1, df=dof)
 
         r_test_out = TestResource(
             name=self.n_test_out,
