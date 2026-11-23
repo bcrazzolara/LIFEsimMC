@@ -52,16 +52,20 @@ class TemplateGenerationModule(BaseModule):
 
         r_setup_in = self.get_resource_from_name(self.n_setup_in)
 
+        # instrument response
         response = r_setup_in.phringe.get_instrument_response(
             fov=self.fov,
             kernels=True,
             perturbations=False
         )
 
+        # electron counts per wavelength bin (n_outputs x n_wavelengths x n_time_steps)
+        # consistent with get_counts
         model_counts = (
                 response
                 * r_setup_in.phringe._observation.detector_integration_time
                 * r_setup_in.phringe.get_wavelength_bin_widths()[None, :, None, None, None]
+                * r_setup_in.phringe._instrument.quantum_efficiency
         )
 
         r_template_out = TemplateResource(
