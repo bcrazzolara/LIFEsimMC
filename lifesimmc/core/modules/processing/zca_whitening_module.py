@@ -40,6 +40,11 @@ class ZCAWhiteningModule(BaseTransformationModule):
         freedom for no benefit. For a beam combiner without a true kernel (e.g. SingleBracewell), set this to True:
         the true mean response is generally nonzero for both background and planet, so subtracting the empirical
         mean removes real background offset.
+    covariance_from_data : bool
+        If True, the covariance matrix is estimated from the data itself (i.e. including the planet signal) instead of
+        from a separately simulated planet-free reference data set. This is the conservative, "no calibration
+        reference" case: the planet signal leaks into the covariance estimate and is partially whitened away.
+        Default is False.
     """
 
     def __init__(
@@ -51,7 +56,8 @@ class ZCAWhiteningModule(BaseTransformationModule):
             n_template_in: str = None,
             n_template_out: str = None,
             diagonal_only: bool = False,
-            subtract_mean: bool = False
+            subtract_mean: bool = False,
+            covariance_from_data: bool = False
     ):
         """Constructor method.
 
@@ -74,6 +80,9 @@ class ZCAWhiteningModule(BaseTransformationModule):
         subtract_mean : bool
             If True, each channel's own time mean is subtracted before whitening. Default is False; set to True
             only for a beam combiner without a true kernel (e.g. SingleBracewell). See the class docstring.
+        covariance_from_data : bool
+            If True, estimate the covariance from the input data itself instead of a planet-free reference
+            simulation. Default is False. See the class docstring.
         """
         super().__init__()
         self.n_setup_in = n_setup_in
@@ -84,6 +93,7 @@ class ZCAWhiteningModule(BaseTransformationModule):
         self.n_transformation_out = n_transformation_out
         self.diagonal_only = diagonal_only
         self.subtract_mean = subtract_mean
+        self.covariance_from_data = covariance_from_data
 
     def run(self, pipeline_resources: list[BaseResource]) -> tuple[
                                                                  DataResource, TemplateResource, TransformationResource] | \
@@ -104,34 +114,38 @@ class ZCAWhiteningModule(BaseTransformationModule):
 
         r_setup_in = self.get_resource_from_name(self.n_setup_in)
 
-        # Generate a reference data set
-        phringe = PHRINGE(
-            seed=self.seed,
-            gpu_index=self.gpu_index,
-            grid_size=self.grid_size,
-            time_step_size=self.time_step_size,
-            device=self.device,
-            extra_memory=20
-        )
+        if self.covariance_from_data:
+            # Conservative case: estimate the covariance from the actual data (planet signal included)
+            noise_ref = self.get_resource_from_name(self.n_data_in).get_data()
+        else:
+            # Generate a reference data set
+            phringe = PHRINGE(
+                seed=self.seed,
+                gpu_index=self.gpu_index,
+                grid_size=self.grid_size,
+                time_step_size=self.time_step_size,
+                device=self.device,
+                extra_memory=20
+            )
 
-        # Create a copy of the instrument
-        instrument_new = deepcopy(r_setup_in.phringe._instrument)
-        phringe.set(instrument_new)
+            # Create a copy of the instrument
+            instrument_new = deepcopy(r_setup_in.phringe._instrument)
+            phringe.set(instrument_new)
 
-        # Set the observation
-        observation_new = deepcopy(r_setup_in.phringe._observation)
-        phringe.set(observation_new)
+            # Set the observation
+            observation_new = deepcopy(r_setup_in.phringe._observation)
+            phringe.set(observation_new)
 
-        # Remove all planets from the scene to calculate covariance only on noise
-        scene_new = deepcopy(r_setup_in.phringe._scene)
+            # Remove all planets from the scene to calculate covariance only on noise
+            scene_new = deepcopy(r_setup_in.phringe._scene)
 
-        for planet in r_setup_in.phringe._scene.planets:
-            scene_new.remove_source(planet.name)
+            for planet in r_setup_in.phringe._scene.planets:
+                scene_new.remove_source(planet.name)
 
-        phringe.set(scene_new)
+            phringe.set(scene_new)
 
-        # Get the noise reference counts
-        noise_ref = phringe.get_counts(kernels=True)
+            # Get the noise reference counts
+            noise_ref = phringe.get_counts(kernels=True)
 
         # Calculate the whitening matrix
         nk = noise_ref.shape[0]
