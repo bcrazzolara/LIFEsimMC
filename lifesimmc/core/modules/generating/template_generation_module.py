@@ -60,12 +60,14 @@ class TemplateGenerationModule(BaseModule):
         )
 
         # electron counts per wavelength bin (n_outputs x n_wavelengths x n_time_steps)
-        # consistent with get_counts
+        # consistent with get_counts. The signal is accumulated over t_ramp = eta * t_DIT (ramp efficiency eta of the
+        # up-the-ramp readout, 1 without it), see PHRINGE._get_ramp_parameters.
         model_counts = (
                 response
                 * r_setup_in.phringe._observation.detector_integration_time
                 * r_setup_in.phringe.get_wavelength_bin_widths()[None, :, None, None, None]
                 * r_setup_in.phringe._instrument.quantum_efficiency
+                * r_setup_in.phringe._get_ramp_parameters()['eta']
         )
 
         r_template_out = TemplateResource(
